@@ -735,74 +735,109 @@ function buildPacks(defs,maxLayers){
     if(singleOnly) return bestSingle;
 
     // --- Side-by-side: combined LENGTH must be <= base length, no minimum floor ---
-    // Individual frames just need to fit within maxL and cantilever — no 80% rule for combos
     const allCands=available.filter(i=>units[i].l<=maxL&&units[i].l<=maxCantileverL);
-    let best2=null,best3=null,best4=null;
-    for(let a=0;a<allCands.length&&!best2;a++){
-      for(let b=a+1;b<allCands.length&&!best2;b++){
+
+    // Collect ALL valid combos, score by combined area (w*l), pick best
+    let bestMulti=null, bestMultiArea=0;
+
+    for(let a=0;a<allCands.length;a++){
+      for(let b=a+1;b<allCands.length;b++){
         const ia=allCands[a],ib=allCands[b];
         const cl=units[ia].l+units[ib].l;
-        if(cl<=maxL&&cl<=maxCantileverL) best2={indices:[ia,ib],stacked:false};
-      }
-    }
-    for(let a=0;a<allCands.length&&!best3;a++){
-      for(let b=a+1;b<allCands.length&&!best3;b++){
-        for(let c=b+1;c<allCands.length&&!best3;c++){
-          const ia=allCands[a],ib=allCands[b],ic=allCands[c];
-          const cl=units[ia].l+units[ib].l+units[ic].l;
-          if(cl<=maxL&&cl<=maxCantileverL) best3={indices:[ia,ib,ic],stacked:false};
+        if(cl<=maxL&&cl<=maxCantileverL){
+          const area=units[ia].w*units[ia].l+units[ib].w*units[ib].l;
+          if(area>bestMultiArea){bestMultiArea=area;bestMulti={indices:[ia,ib],stacked:false};}
         }
       }
     }
-    for(let a=0;a<allCands.length&&!best4;a++){
-      for(let b=a+1;b<allCands.length&&!best4;b++){
-        for(let c=b+1;c<allCands.length&&!best4;c++){
-          for(let d=c+1;d<allCands.length&&!best4;d++){
+    for(let a=0;a<allCands.length;a++){
+      for(let b=a+1;b<allCands.length;b++){
+        for(let c=b+1;c<allCands.length;c++){
+          const ia=allCands[a],ib=allCands[b],ic=allCands[c];
+          const cl=units[ia].l+units[ib].l+units[ic].l;
+          if(cl<=maxL&&cl<=maxCantileverL){
+            const area=units[ia].w*units[ia].l+units[ib].w*units[ib].l+units[ic].w*units[ic].l;
+            if(area>bestMultiArea){bestMultiArea=area;bestMulti={indices:[ia,ib,ic],stacked:false};}
+          }
+        }
+      }
+    }
+    for(let a=0;a<allCands.length;a++){
+      for(let b=a+1;b<allCands.length;b++){
+        for(let c=b+1;c<allCands.length;c++){
+          for(let d=c+1;d<allCands.length;d++){
             const ia=allCands[a],ib=allCands[b],ic=allCands[c],id=allCands[d];
             const cl=units[ia].l+units[ib].l+units[ic].l+units[id].l;
-            if(cl<=maxL&&cl<=maxCantileverL) best4={indices:[ia,ib,ic,id],stacked:false};
+            if(cl<=maxL&&cl<=maxCantileverL){
+              const area=units[ia].w*units[ia].l+units[ib].w*units[ib].l+units[ic].w*units[ic].l+units[id].w*units[id].l;
+              if(area>bestMultiArea){bestMultiArea=area;bestMulti={indices:[ia,ib,ic,id],stacked:false};}
+            }
           }
         }
       }
     }
 
+    // Only use single if no multi-frame combo fits OR single has more area than any combo
+    // Multi-frame always preferred over single when available
+    const singleArea=bestSingle?units[bestSingle.indices[0]].w*units[bestSingle.indices[0]].l:0;
+    const best2=bestMulti; // alias for height-stacked section below
+
     // --- Height-stacked: combined HEIGHT fits within maxNextH, length = max frame length ---
-    // Use same minL/maxL tolerance on the max frame length
     let bestH2=null,bestH3=null,bestH4=null;
     const hCands=available.filter(i=>units[i].w<=maxNextH&&units[i].l<=maxL&&units[i].l<=maxCantileverL);
-    for(let a=0;a<hCands.length&&!bestH2;a++){
-      for(let b=a+1;b<hCands.length&&!bestH2;b++){
+    let bestStackedArea=0;
+    for(let a=0;a<hCands.length;a++){
+      for(let b=a+1;b<hCands.length;b++){
         const ia=hCands[a],ib=hCands[b];
         const ch=units[ia].w+units[ib].w;
         const cl=Math.max(units[ia].l,units[ib].l);
-        if(ch<=maxNextH&&cl>=minL&&cl<=maxL&&cl<=maxCantileverL) bestH2={indices:[ia,ib],stacked:true};
-      }
-    }
-    for(let a=0;a<hCands.length&&!bestH3;a++){
-      for(let b=a+1;b<hCands.length&&!bestH3;b++){
-        for(let c=b+1;c<hCands.length&&!bestH3;c++){
-          const ia=hCands[a],ib=hCands[b],ic=hCands[c];
-          const ch=units[ia].w+units[ib].w+units[ic].w;
-          const cl=Math.max(units[ia].l,units[ib].l,units[ic].l);
-          if(ch<=maxNextH&&cl>=minL&&cl<=maxL&&cl<=maxCantileverL) bestH3={indices:[ia,ib,ic],stacked:true};
+        if(ch<=maxNextH&&cl>=minL&&cl<=maxL&&cl<=maxCantileverL){
+          const area=units[ia].w*units[ia].l+units[ib].w*units[ib].l;
+          if(area>bestStackedArea){bestStackedArea=area;bestH2={indices:[ia,ib],stacked:true};}
         }
       }
     }
-    for(let a=0;a<hCands.length&&!bestH4;a++){
-      for(let b=a+1;b<hCands.length&&!bestH4;b++){
-        for(let c=b+1;c<hCands.length&&!bestH4;c++){
-          for(let d=c+1;d<hCands.length&&!bestH4;d++){
-            const ia=hCands[a],ib=hCands[b],ic=hCands[c],id=hCands[d];
-            const ch=units[ia].w+units[ib].w+units[ic].w+units[id].w;
-            const cl=Math.max(units[ia].l,units[ib].l,units[ic].l,units[id].l);
-            if(ch<=maxNextH&&cl>=minL&&cl<=maxL&&cl<=maxCantileverL) bestH4={indices:[ia,ib,ic,id],stacked:true};
+    for(let a=0;a<hCands.length;a++){
+      for(let b=a+1;b<hCands.length;b++){
+        for(let c=b+1;c<hCands.length;c++){
+          const ia=hCands[a],ib=hCands[b],ic=hCands[c];
+          const ch=units[ia].w+units[ib].w+units[ic].w;
+          const cl=Math.max(units[ia].l,units[ib].l,units[ic].l);
+          if(ch<=maxNextH&&cl>=minL&&cl<=maxL&&cl<=maxCantileverL){
+            const area=units[ia].w*units[ia].l+units[ib].w*units[ib].l+units[ic].w*units[ic].l;
+            if(area>bestStackedArea){bestStackedArea=area;bestH3={indices:[ia,ib,ic],stacked:true};}
           }
         }
       }
     }
+    for(let a=0;a<hCands.length;a++){
+      for(let b=a+1;b<hCands.length;b++){
+        for(let c=b+1;c<hCands.length;c++){
+          for(let d=c+1;d<hCands.length;d++){
+            const ia=hCands[a],ib=hCands[b],ic=hCands[c],id=hCands[d];
+            const ch=units[ia].w+units[ib].w+units[ic].w+units[id].w;
+            const cl=Math.max(units[ia].l,units[ib].l,units[ic].l,units[id].l);
+            if(ch<=maxNextH&&cl>=minL&&cl<=maxL&&cl<=maxCantileverL){
+              const area=units[ia].w*units[ia].l+units[ib].w*units[ib].l+units[ic].w*units[ic].l+units[id].w*units[id].l;
+              if(area>bestStackedArea){bestStackedArea=area;bestH4={indices:[ia,ib,ic,id],stacked:true};}
+            }
+          }
+        }
+      }
+    }
+    const bestStacked=bestH4||bestH3||bestH2||null;
 
-    // Prefer side-by-side with more frames, then height-stacked with more frames, then single
-    return best4||best3||best2||bestH4||bestH3||bestH2||bestSingle;
+    // Pick best overall by area: compare side-by-side multi, stacked, and single
+    // Multi-frame (side-by-side or stacked) always preferred over single
+    const candidates=[];
+    if(bestMulti) candidates.push({res:bestMulti,area:bestMultiArea});
+    if(bestStacked) candidates.push({res:bestStacked,area:bestStackedArea});
+    if(candidates.length>0){
+      // Return whichever multi option has the highest area
+      candidates.sort((a,b)=>b.area-a.area);
+      return candidates[0].res;
+    }
+    return bestSingle;
   }
 
   for(const bi of byArea){

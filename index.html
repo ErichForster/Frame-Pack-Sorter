@@ -115,9 +115,6 @@ textarea{resize:vertical;font-family:var(--fm);font-size:12px;line-height:1.5}
     <div><label for="job-sub">Sub-heading</label><input id="job-sub" placeholder="e.g. 89mm Walls"/></div>
     <div><label for="job-num">Project number</label><input id="job-num" placeholder="e.g. 26000"/></div>
   </div>
-  <div class="grid3">
-    <div><label for="job-wo">Work order number</label><input id="job-wo" placeholder="e.g. W5001"/></div>
-  </div>
 </div>
 
 <!-- INPUT CARD -->
@@ -256,12 +253,14 @@ function r50(v){return Math.round(v/10)*10}
 
 function normalise(name,w,l){
   let fw=r50(w),fl=r50(l),swapped=false;
-  // Swap if either dimension exceeds MAX_LEN but the other doesn't
-  if((fl>MAX_LEN&&fw<=MAX_LEN)||(fw>MAX_LEN&&fl<=MAX_LEN)){
+  // Only rotate when HEIGHT (w) exceeds MAX_LEN and length doesn't
+  if(fw>MAX_LEN&&fl<=MAX_LEN){
     let tmp=fw;fw=fl;fl=tmp;swapped=true;
   }
   const oversized=fw>=OVERSIZE_DIM&&fl>=OVERSIZE_DIM;
-  return{name,w:fw,l:fl,swapped,oversized};
+  // Store original (pre-swap) dims for display sorting
+  const origW=swapped?fl:fw, origL=swapped?fw:fl;
+  return{name,w:fw,l:fl,swapped,oversized,origW,origL};
 }
 
 function downloadCSVTemplate(){
@@ -346,8 +345,8 @@ function renderFrameList(){
   const sorted=[...frames].sort((a,b)=>{
     if(a.weld!==b.weld)return a.weld?-1:1;
     if(a.oversized!==b.oversized)return a.oversized?-1:1;
-    if(b.w!==a.w)return b.w-a.w;
-    return b.l-a.l;
+    if((b.origW||b.w)!==(a.origW||a.w))return (b.origW||b.w)-(a.origW||a.w);
+    return (b.origL||b.l)-(a.origL||a.l);
   });
 
   let html='';
@@ -370,8 +369,8 @@ function renderFrameList(){
     if(f.swapped)notes.push('<span class="tag tag-swap">Frame Rotated</span>');
     html+='<tr style="'+(f.oversized?'background:var(--bgd);':f.weld?'background:var(--bg2);':'')+'">'+
       '<td style="font-weight:500'+(f.oversized?';color:var(--txd)':'')+'">'+esc(f.name)+'</td>'+
-      '<td'+(f.oversized?' style="color:var(--txd);font-weight:500"':'')+'>'+f.w+'</td>'+
-      '<td'+(f.oversized?' style="color:var(--txd);font-weight:500"':'')+'>'+f.l+'</td>'+
+      '<td'+(f.oversized?' style="color:var(--txd);font-weight:500"':'')+'>'+( f.origW||f.w)+'</td>'+
+      '<td'+(f.oversized?' style="color:var(--txd);font-weight:500"':'')+'>'+( f.origL||f.l)+'</td>'+
       '<td>'+(f.w*f.l/1e6).toFixed(3)+'</td>'+
       '<td>'+notes.join(' ')+'</td>'+
       '<td style="display:flex;gap:4px">'+
@@ -569,9 +568,9 @@ function showGroupSelector(groups,jobTitle,projNum){
 
 function layersFromSubheading(name){
   const n=String(name).toLowerCase();
-  if(/\b75(mm|\b)/.test(n))return 7;
-  if(/\b(89|90)(mm|\b)/.test(n))return 5;
-  if(/\b150(mm|\b)/.test(n))return 3;
+  if(/\b75(mm|_|\b)/.test(n))return 7;
+  if(/\b(89|90)(mm|_|\b)/.test(n))return 5;
+  if(/\b150(mm|_|\b)/.test(n))return 3;
   return null;
 }
 
@@ -637,7 +636,7 @@ function renderPreview(rows,errors,cid,mid){
   let h='<table class="preview-table"><thead><tr><th>Name</th><th>Height</th><th>Length</th><th>Rounded H</th><th>Rounded L</th><th>Notes</th></tr></thead><tbody>';
   rows.slice(0,8).forEach(r=>{
     const rw=r50(r.w),rl=r50(r.l);
-    const sw=rl>MAX_LEN,wf=isWeld(r.name);
+    const sw=rw>MAX_LEN,wf=isWeld(r.name);
     h+='<tr'+(wf?' style="background:var(--bg2)"':'')+'><td>'+esc(r.name)+'</td><td>'+r.w+'</td><td>'+r.l+'</td><td><strong>'+rw+'</strong></td><td><strong>'+rl+'</strong></td><td style="font-size:11px;color:var(--tx2)">'+(wf?'WELD ':'')+( sw?'Frame will be rotated':'')+'</td></tr>';
   });
   if(rows.length>8)h+='<tr><td colspan="6" style="color:var(--tx3);font-size:11px">...and '+(rows.length-8)+' more</td></tr>';
@@ -735,15 +734,15 @@ function buildPacks(defs,maxLayers){
     }
     if(singleOnly) return bestSingle;
 
-    // --- Side-by-side: combined LENGTH fits [minL, maxL] ---
-    // Each frame must also be at least 80% of base length
-    const allCands=available.filter(i=>units[i].l<=maxL&&units[i].l>=baseL*0.8);
+    // --- Side-by-side: combined LENGTH must be <= base length, no minimum floor ---
+    // Individual frames just need to fit within maxL and cantilever — no 80% rule for combos
+    const allCands=available.filter(i=>units[i].l<=maxL&&units[i].l<=maxCantileverL);
     let best2=null,best3=null,best4=null;
     for(let a=0;a<allCands.length&&!best2;a++){
       for(let b=a+1;b<allCands.length&&!best2;b++){
         const ia=allCands[a],ib=allCands[b];
         const cl=units[ia].l+units[ib].l;
-        if(cl>=minL&&cl<=maxL&&cl<=maxCantileverL) best2={indices:[ia,ib],stacked:false};
+        if(cl<=maxL&&cl<=maxCantileverL) best2={indices:[ia,ib],stacked:false};
       }
     }
     for(let a=0;a<allCands.length&&!best3;a++){
@@ -751,7 +750,7 @@ function buildPacks(defs,maxLayers){
         for(let c=b+1;c<allCands.length&&!best3;c++){
           const ia=allCands[a],ib=allCands[b],ic=allCands[c];
           const cl=units[ia].l+units[ib].l+units[ic].l;
-          if(cl>=minL&&cl<=maxL&&cl<=maxCantileverL) best3={indices:[ia,ib,ic],stacked:false};
+          if(cl<=maxL&&cl<=maxCantileverL) best3={indices:[ia,ib,ic],stacked:false};
         }
       }
     }
@@ -761,7 +760,7 @@ function buildPacks(defs,maxLayers){
           for(let d=c+1;d<allCands.length&&!best4;d++){
             const ia=allCands[a],ib=allCands[b],ic=allCands[c],id=allCands[d];
             const cl=units[ia].l+units[ib].l+units[ic].l+units[id].l;
-            if(cl>=minL&&cl<=maxL&&cl<=maxCantileverL) best4={indices:[ia,ib,ic,id],stacked:false};
+            if(cl<=maxL&&cl<=maxCantileverL) best4={indices:[ia,ib,ic,id],stacked:false};
           }
         }
       }
@@ -1015,7 +1014,6 @@ function exportPDF(){
   const jobTitle=G('job-title').value.trim();
   const jobSub=G('job-sub').value.trim();
   const jobNum=G('job-num').value.trim();
-  const jobWO=G('job-wo').value.trim();
   const swapped=[...lastWeld,...lastPacks.flatMap(p=>[p.base,...p.layers.flatMap(l=>l.frames)])].filter(f=>f&&f.swapped);
 
   // Build a lookup: frame name → pack number
@@ -1027,10 +1025,12 @@ function exportPDF(){
       l.frames.forEach(f=>{framePackRef[f.name]='Pack '+(pi+1)+' L'+(li+1);});
     });
   });
-  // Frame list sorted by pack number then frame name
+  // Frame list sorted by height then length
   const sortedFrames=[...frames].sort((a,b)=>{
-    const pa=framePackRef[a.name]||'ZZZ',pb=framePackRef[b.name]||'ZZZ';
-    return pa.localeCompare(pb)||a.name.localeCompare(b.name);
+    const ah=a.origW||a.w, bh=b.origW||b.w;
+    const al=a.origL||a.l, bl=b.origL||b.l;
+    if(bh!==ah)return bh-ah;
+    return bl-al;
   });
   let frameListHTML='<table style="width:100%;border-collapse:collapse;font-size:9pt;margin-top:6px">'+
     '<thead><tr>'+
@@ -1129,7 +1129,6 @@ function exportPDF(){
   '</div>'+
   '<div class="meta">'+
   (jobNum?'<strong>Project:</strong> '+esc(jobNum)+'<br>':'')+
-  (jobWO?'<strong>Work Order:</strong> '+esc(jobWO)+'<br>':'')+
   'Generated: '+ds+'<br>Max layers: '+lastMaxL+
   '</div></div>'+
     '<div class="summary">'+
@@ -1138,7 +1137,7 @@ function exportPDF(){
   '<div class="sum-box"><div class="sum-val">'+lastWeld.length+'</div><div class="sum-lbl">Weld frames (separate)</div></div>'+
   '</div>'+
   swapNote+
-  '<div style="margin-bottom:8mm"><!-- frame list page - no footer needed --><div class="frame-list-section" style="page-break-after:always"><div class="frame-list-title">All frames &mdash; sorted by length then height (largest first)</div>'+frameListHTML+'</div>'+
+  '<div style="margin-bottom:8mm"><!-- frame list page - no footer needed --><div class="frame-list-section" style="page-break-after:always"><div class="frame-list-title">All frames &mdash; sorted by height then length (largest first)</div>'+frameListHTML+'</div>'+
   ph+
   '<div class="footer"><span style="color:#ec8516;font-weight:600">AUSTRUSS</span><span style="margin-left:8px">'+(titleParts.slice(0,-1).join(' — '))+'</span><span>'+ds+'</span></div></body></html>';
 

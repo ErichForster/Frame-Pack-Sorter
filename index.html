@@ -2944,32 +2944,122 @@ function unpackAllFrames(){
 }
 
 /* ============================================================
-   SESSIONS — Google Apps Script backend + file fallback
+   SESSIONS — Supabase backend
+   Replace the existing Apps Script session block in
+   frame-pack-sorter-interactive.html with this code.
+
+   SETUP:
+   1. Create a Supabase project at https://supabase.com
+   2. Run the SQL schema below in the SQL editor
+   3. Copy your Project URL and anon key from
+      Settings → API and paste them below
+   4. Run migration_tool.html once to copy Drive data across
+   5. Deploy a new Apps Script pointing to the new Supabase
+      edge function (optional) OR use this client-side approach
    ============================================================
-   HOW IT WORKS:
-   A tiny Google Apps Script Web App acts as the backend.
-   It's deployed publicly (no sign-in required) and handles
-   CORS. It saves/loads JSON files in a shared Drive folder.
-   Set APPS_SCRIPT_URL below after deploying the script.
-   ============================================================ */
 
-// ↓↓↓ PASTE YOUR APPS SCRIPT WEB APP URL HERE after deploying ↓↓↓
-let APPS_SCRIPT_URL = localStorage.getItem('fps_script_url') || 'https://script.google.com/macros/s/AKfycbzyqO8v6Rlkx4fznE47i49m5aAGJ49FsyFYtCvGaFWRZ-5mZSbsq9wmo9OBgSENOsfn/exec';
-// ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+   SQL TO RUN IN SUPABASE SQL EDITOR:
+   ─────────────────────────────────────────────────────────────
+   create table sessions (
+     id           uuid primary key default gen_random_uuid(),
+     created_at   timestamptz default now(),
+     updated_at   timestamptz default now(),
+     job_title    text,
+     job_sub      text,
+     job_num      text,
+     job_wo       text,
+     saved_at     timestamptz,
+     pack_count   int,
+     frame_count  int,
+     app_version  int,
+     content      jsonb not null
+   );
+   create index on sessions (job_num);
+   create index on sessions (updated_at desc);
 
+   create or replace function update_updated_at()
+   returns trigger language plpgsql as $$
+   begin new.updated_at = now(); return new; end; $$;
+
+   create trigger sessions_updated_at
+     before update on sessions
+     for each row execute procedure update_updated_at();
+
+   -- Allow anonymous read and write (the app has no user accounts)
+   alter table sessions enable row level security;
+   create policy "Anyone can read sessions"
+     on sessions for select using (true);
+   create policy "Anyone can insert sessions"
+     on sessions for insert with check (true);
+   create policy "Anyone can update sessions"
+     on sessions for update using (true);
+   create policy "Anyone can delete sessions"
+     on sessions for delete using (true);
+   ─────────────────────────────────────────────────────────────
+*/
+
+/* ---- Config ---- */
+const SUPABASE_URL   = 'https://tfzlpqywzkultwjyukmq.supabase.co';   // ← paste yours
+const SUPABASE_KEY   = 'sb_publishable_hcKltqoc7Zsib-zQEwmfPg_KpB08A5g';                          // ← paste yours
+const SUPABASE_TABLE = 'sessions';
 const SESSION_VERSION = 2;
-let driveSessionCache = [];
 
-/* ----- Build session object ----- */
+/* ---- Low-level Supabase REST helpers ---- */
+function sbHeaders(){
+  return {
+    'Content-Type':  'application/json',
+    'apikey':        SUPABASE_KEY,
+    'Authorization': 'Bearer ' + SUPABASE_KEY,
+  };
+}
+
+async function sbGet(path, params={}){
+  const q = new URLSearchParams(params).toString();
+  const url = `${SUPABASE_URL}/rest/v1/${path}${q ? '?'+q : ''}`;
+  const resp = await fetch(url, { headers: sbHeaders() });
+  if(!resp.ok) throw new Error(`Supabase error ${resp.status}: ${await resp.text()}`);
+  return resp.json();
+}
+
+async function sbPost(path, body, headers={}){
+  const resp = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    method: 'POST',
+    headers: { ...sbHeaders(), ...headers },
+    body: JSON.stringify(body),
+  });
+  if(!resp.ok) throw new Error(`Supabase error ${resp.status}: ${await resp.text()}`);
+  return resp.status === 204 ? null : resp.json();
+}
+
+async function sbPatch(path, match, body){
+  const q = new URLSearchParams(match).toString();
+  const resp = await fetch(`${SUPABASE_URL}/rest/v1/${path}?${q}`, {
+    method: 'PATCH',
+    headers: { ...sbHeaders(), 'Prefer': 'return=minimal' },
+    body: JSON.stringify(body),
+  });
+  if(!resp.ok) throw new Error(`Supabase error ${resp.status}: ${await resp.text()}`);
+}
+
+async function sbDelete(path, match){
+  const q = new URLSearchParams(match).toString();
+  const resp = await fetch(`${SUPABASE_URL}/rest/v1/${path}?${q}`, {
+    method: 'DELETE',
+    headers: sbHeaders(),
+  });
+  if(!resp.ok) throw new Error(`Supabase error ${resp.status}: ${await resp.text()}`);
+}
+
+/* ---- Build / apply session ---- */
 function buildSessionObject(){
   return {
-    _version: SESSION_VERSION,
-    _app: 'Austruss Frame Pack Sorter',
-    savedAt: new Date().toISOString(),
-    jobTitle: G('job-title').value.trim(),
-    jobSub:   G('job-sub').value.trim(),
-    jobNum:   G('job-num').value.trim(),
-    jobWO:    G('job-wo').value.trim(),
+    _version:  SESSION_VERSION,
+    _app:      'Austruss Frame Pack Sorter',
+    savedAt:   new Date().toISOString(),
+    jobTitle:  G('job-title').value.trim(),
+    jobSub:    G('job-sub').value.trim(),
+    jobNum:    G('job-num').value.trim(),
+    jobWO:     G('job-wo').value.trim(),
     maxLayers: lastMaxL,
     frames, packs: lastPacks,
     weld: lastWeld, oversized: lastOversized,
@@ -2977,7 +3067,6 @@ function buildSessionObject(){
   };
 }
 
-/* ----- Apply loaded session ----- */
 function applySession(sess){
   if(!sess || sess._app !== 'Austruss Frame Pack Sorter'){
     smNotify('Not a valid Frame Pack Sorter session.', true); return false;
@@ -2986,12 +3075,12 @@ function applySession(sess){
   if(sess.jobSub)   G('job-sub').value   = sess.jobSub;
   if(sess.jobNum)   G('job-num').value   = sess.jobNum;
   if(sess.jobWO)    G('job-wo').value    = sess.jobWO;
-  frames = sess.frames || [];
-  lastPacks = sess.packs || [];
-  lastWeld = sess.weld || [];
-  lastOversized = sess.oversized || [];
-  lastMaxL = sess.maxLayers || 10;
-  unpackedFrames = sess.unpacked || [];
+  frames         = sess.frames     || [];
+  lastPacks      = sess.packs      || [];
+  lastWeld       = sess.weld       || [];
+  lastOversized  = sess.oversized  || [];
+  lastMaxL       = sess.maxLayers  || 10;
+  unpackedFrames = sess.unpacked   || [];
   G('max-layers').value = lastMaxL;
   if(dndActive){ dndActive=false; document.body.classList.remove('dnd-active'); }
   renderFrameList();
@@ -3004,122 +3093,100 @@ function applySession(sess){
   return true;
 }
 
-/* ----- Apps Script API calls ----- */
-async function scriptCall(params){
-  if(!APPS_SCRIPT_URL) throw new Error('No Apps Script URL configured. Click ⚙ Setup first.');
-  const url = APPS_SCRIPT_URL + '?' + new URLSearchParams(params);
-  const resp = await fetch(url, {redirect:'follow'});
-  if(!resp.ok) throw new Error('Server error ' + resp.status);
-  const text = await resp.text();
-  try { return JSON.parse(text); }
-  catch(e) { throw new Error('Bad response: ' + text.slice(0,120)); }
+/* ---- Filename helper ---- */
+function sessionFilename(sess){
+  function slug(s){ return (s||'').trim().replace(/[^a-z0-9\s]/gi,' ').replace(/\s+/g,'-').replace(/-+/g,'-').replace(/^-|-$/g,'').slice(0,40); }
+  const parts = [sess.jobNum, sess.jobTitle, sess.jobSub].map(slug).filter(Boolean);
+  const wo = sess.jobWO ? ' - ' + sess.jobWO.trim() : '';
+  return (parts.length ? parts.join('--') : 'session') + wo;
 }
 
-async function scriptSave(filename, jsonStr){
-  if(!APPS_SCRIPT_URL) throw new Error('No Apps Script URL configured. Click ⚙ Setup first.');
-  // Use no-cors POST — Apps Script accepts form data this way without redirect issues
-  // Then we poll the list to confirm it arrived
-  const formData = new FormData();
-  formData.append('action', 'save');
-  formData.append('filename', filename);
-  formData.append('content', jsonStr);
-  // Try no-cors POST first (works in most browsers)
-  await fetch(APPS_SCRIPT_URL, { method:'POST', body: formData, mode:'no-cors' });
-  // Wait briefly for Apps Script to process, then verify via list
-  await new Promise(r => setTimeout(r, 2500));
-  const listResult = await scriptCall({ action:'list' });
-  if(!listResult.ok) throw new Error(listResult.error || 'Could not verify save');
-  const found = (listResult.files||[]).find(f => f.name === filename);
-  if(!found) throw new Error('File did not appear in Drive after save — check Apps Script URL and permissions');
-  return { ok: true, id: found.id, name: found.name };
-}
-
-/* ----- Save to Drive via Apps Script ----- */
-async function saveSessionToDrive(){
-  const btn = G('sm-gdrive-save-btn');
+/* ---- Save to Supabase ---- */
+async function saveSessionToDrive(){   // name kept so the existing button onclick still works
+  const btn    = G('sm-gdrive-save-btn');
   const status = G('sm-save-status');
-  if(!APPS_SCRIPT_URL){ openSetupPanel(); return; }
   btn.disabled = true;
   btn.textContent = '⏳ Saving…';
-  status.textContent = 'Uploading to Google Drive…';
+  status.textContent = 'Saving to Supabase…';
   status.style.color = 'var(--tx3)';
 
   try {
-    const sess = buildSessionObject();
-    // Filename: ProjectNum--JobTitle--SubHeading - W-00000.json
-    function slugPart(s){ return (s||'').trim().replace(/[^a-z0-9\s]/gi,' ').replace(/\s+/g,'-').replace(/-+/g,'-').replace(/^-|-$/g,'').slice(0,40); }
-    const parts = [sess.jobNum, sess.jobTitle, sess.jobSub].map(slugPart).filter(Boolean);
-    const woSuffix = sess.jobWO ? ' - ' + sess.jobWO.trim() : '';
-    const filename = (parts.length ? parts.join('--') : 'session') + woSuffix + '.json';
+    const sess    = buildSessionObject();
+    const name    = sessionFilename(sess);
+    const packCount  = (sess.packs||[]).filter(p=>p&&p.base!=null).length;
+    const frameCount = (sess.frames||[]).length;
 
-    status.textContent = 'Uploading ' + filename + '…';
-    const jsonStr = JSON.stringify(sess, null, 2);
-    const result = await scriptSave(filename, jsonStr);
-    if(result.ok){
-      status.textContent = '✓ Saved: ' + filename;
-      status.style.color = 'var(--brand)';
-      smNotify('Saved to Google Drive');
-      loadDriveList();
-    } else {
-      throw new Error(result.error || 'Unknown error');
-    }
-  } catch(err){
+    const row = {
+      job_title:   sess.jobTitle  || null,
+      job_sub:     sess.jobSub    || null,
+      job_num:     sess.jobNum    || null,
+      job_wo:      sess.jobWO     || null,
+      saved_at:    sess.savedAt,
+      pack_count:  packCount,
+      frame_count: frameCount,
+      app_version: sess._version,
+      content:     sess,
+    };
+
+    await sbPost(SUPABASE_TABLE, row, { 'Prefer': 'return=minimal' });
+    status.textContent = '✓ Saved: ' + name;
+    status.style.color = 'var(--brand)';
+    smNotify('Saved to Supabase');
+    setTimeout(() => loadDriveList(), 600);
+  } catch(err) {
     status.textContent = '✗ ' + err.message;
     status.style.color = 'var(--txd)';
     smNotify('Save failed: ' + err.message, true);
+    console.error('Supabase save error:', err);
   } finally {
     btn.disabled = false;
-    btn.textContent = '⛅ Save to Google Drive';
+    btn.textContent = '☁ Save to Supabase';
   }
 }
 
-/* ----- List sessions from Drive ----- */
-async function loadDriveList(){
+/* ---- List sessions ---- */
+async function loadDriveList(){   // name kept for existing button onclick
   const list = G('sm-drive-list');
-  if(!APPS_SCRIPT_URL){
-    list.innerHTML = '<div class="sm-setup-prompt">&#9881; <a href="#" onclick="openSetupPanel();return false">Set up Google Drive</a> to save and load sessions across devices.</div>';
-    return;
-  }
-  list.innerHTML = '<div class="sm-loading">Loading from Google Drive…</div>';
+  list.innerHTML = '<div class="sm-loading">Loading sessions…</div>';
   G('sm-search').value = '';
 
   try {
-    const result = await scriptCall({ action:'list' });
-    if(!result.ok) throw new Error(result.error || 'List failed');
-    const files = result.files || [];
-    driveSessionCache = files;
+    // Select all columns except the heavy content blob for the list view
+    const rows = await sbGet(SUPABASE_TABLE, {
+      select: 'id,job_title,job_sub,job_num,job_wo,saved_at,pack_count,frame_count,updated_at',
+      order:  'updated_at.desc',
+    });
 
-    if(!files.length){
-      list.innerHTML = '<div class="sm-empty">No sessions in Drive yet.<br><span style="font-size:11px">Save a session to get started.</span></div>';
+    if(!rows.length){
+      list.innerHTML = '<div class="sm-empty">No sessions saved yet.</div>';
       return;
     }
-    renderDriveList(files);
-  } catch(err){
-    list.innerHTML = '<div class="sm-error">Could not load list: ' + esc(err.message) + '<br><span style="font-size:11px">Check your Apps Script URL in ⚙ Setup.</span></div>';
+
+    renderDriveList(rows);
+  } catch(err) {
+    list.innerHTML = '<div class="sm-error">Could not load: ' + esc(err.message) + '</div>';
+    console.error('Supabase list error:', err);
   }
 }
 
-function renderDriveList(files){
+function renderDriveList(rows){
   const list = G('sm-drive-list');
-  // Sort newest first
-  files.sort((a,b)=> (b.modifiedTime||'').localeCompare(a.modifiedTime||''));
-  list.innerHTML = files.map(f => {
-    const nameParts = f.name.replace(/^fps_/,'').replace(/\.json$/,'');
-    const dateMatch = nameParts.match(/_(\d{4}-\d{2}-\d{2})$/);
-    const dateStr = dateMatch ? dateMatch[1] : '';
-    const jobName = nameParts.replace(/_\d{4}-\d{2}-\d{2}$/,'').replace(/_/g,' ');
-    const modDate = f.modifiedTime
-      ? new Date(f.modifiedTime).toLocaleDateString('en-AU',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})
-      : dateStr;
-    return '<div class="sm-saved-item" data-id="'+esc(f.id)+'" data-name="'+esc((f.name+' '+jobName).toLowerCase())+'"'
-      +' onclick="loadDriveSession(\''+esc(f.id)+'\',\''+esc(f.name)+'\')">'
+  list.innerHTML = rows.map(r => {
+    const title   = r.job_title || r.job_num || 'Untitled';
+    const modDate = r.updated_at
+      ? new Date(r.updated_at).toLocaleDateString('en-AU',{day:'2-digit',month:'short',year:'numeric'})
+      : '';
+    return '<div class="sm-saved-item" data-id="'+esc(r.id)+'" data-name="'+esc((title+' '+(r.job_num||'')+' '+(r.job_wo||'')).toLowerCase())+'" onclick="loadDriveSession(\''+esc(r.id)+'\',\''+esc(title)+'\')">'
       +'<div class="sm-item-icon">&#128230;</div>'
       +'<div class="sm-item-body">'
-      +'<div class="sm-item-title">'+esc(jobName)+'</div>'
-      +'<div class="sm-item-meta">'+modDate+'</div>'
+      +'<div class="sm-item-title">'+esc(title)+(r.job_wo?' <span style="background:#1a1a18;color:#fff;font-size:10px;padding:1px 7px;border-radius:20px;font-weight:600">'+esc(r.job_wo)+'</span>':'')+'</div>'
+      +'<div class="sm-item-meta">'+modDate
+        +(r.pack_count  !=null?' &bull; '+r.pack_count+' pack'+(r.pack_count!==1?'s':''):'')
+        +(r.frame_count !=null?' &bull; '+r.frame_count+' frames':'')
+      +'</div>'
       +'</div>'
       +'<div class="sm-item-actions">'
-      +'<button class="sm-del-btn" title="Delete" onclick="event.stopPropagation();deleteDriveSession(\''+esc(f.id)+'\',this)">&#128465;</button>'
+      +'<button class="sm-del-btn" title="Delete" onclick="event.stopPropagation();deleteDriveSession(\''+esc(r.id)+'\',this)">&#128465;</button>'
       +'</div>'
       +'</div>';
   }).join('');
@@ -3132,66 +3199,55 @@ function filterDriveList(query){
   });
 }
 
-/* ----- Load session from Drive ----- */
-async function loadDriveSession(fileId, filename){
-  const item = G('sm-drive-list').querySelector('[data-id="'+fileId+'"]');
+/* ---- Load a session ---- */
+async function loadDriveSession(id, title){
+  const item = G('sm-drive-list').querySelector('[data-id="'+id+'"]');
   if(item){ item.style.opacity='0.5'; item.style.pointerEvents='none'; }
   smNotify('Loading…');
   try {
-    const result = await scriptCall({ action:'load', id: fileId });
-    if(!result.ok) throw new Error(result.error || 'Load failed');
-    const sess = typeof result.content === 'string' ? JSON.parse(result.content) : result.content;
-    if(applySession(sess)){ smNotify('Loaded: ' + filename); closeSessionsModal(); }
-  } catch(err){
+    // Fetch the full content column for this specific row
+    const rows = await sbGet(SUPABASE_TABLE, {
+      select: 'content',
+      id:     'eq.' + id,
+    });
+    if(!rows.length) throw new Error('Session not found');
+    const sess = rows[0].content;
+    if(applySession(sess)){
+      smNotify('Loaded: ' + title);
+      closeSessionsModal();
+    }
+  } catch(err) {
     smNotify('Load failed: ' + err.message, true);
     if(item){ item.style.opacity=''; item.style.pointerEvents=''; }
   }
 }
 
-/* ----- Delete from Drive ----- */
-async function deleteDriveSession(fileId, btn){
-  if(!confirm('Delete this session from Google Drive?')) return;
+/* ---- Delete a session ---- */
+async function deleteDriveSession(id, btn){
+  if(!confirm('Delete this session from Supabase?')) return;
   btn.textContent = '⏳'; btn.disabled = true;
   try {
-    const result = await scriptCall({ action:'delete', id: fileId });
-    if(!result.ok) throw new Error(result.error);
+    await sbDelete(SUPABASE_TABLE, { id: 'eq.' + id });
     const item = btn.closest('.sm-saved-item');
     if(item) item.remove();
-    smNotify('Deleted');
+    smNotify('Session deleted');
     if(!G('sm-drive-list').querySelector('.sm-saved-item'))
-      G('sm-drive-list').innerHTML = '<div class="sm-empty">No sessions in Drive yet.</div>';
-  } catch(err){
-    smNotify('Delete failed', true);
+      G('sm-drive-list').innerHTML = '<div class="sm-empty">No sessions saved yet.</div>';
+  } catch(err) {
+    smNotify('Delete failed: ' + err.message, true);
     btn.textContent = '🗑'; btn.disabled = false;
   }
 }
 
-/* ----- Setup panel (URL configuration) ----- */
-function openSetupPanel(){
-  G('sm-setup-panel').style.display = 'block';
-  G('sm-script-url-input').value = APPS_SCRIPT_URL;
-  G('sm-script-url-input').focus();
-}
-
-function saveScriptUrl(){
-  const url = G('sm-script-url-input').value.trim();
-  if(!url){ smNotify('Please enter a URL', true); return; }
-  APPS_SCRIPT_URL = url;
-  localStorage.setItem('fps_script_url', url);
-  G('sm-setup-panel').style.display = 'none';
-  smNotify('URL saved');
-  loadDriveList();
-}
-
-/* ----- Modal open/close ----- */
+/* ---- Modal open/close ---- */
 function openSessionsModal(){
   const hasPacks = lastPacks.length > 0 || frames.length > 0;
-  G('sm-save-section').style.display = hasPacks ? 'block' : 'none';
-  G('sm-save-status').textContent = '';
-  G('sm-gdrive-save-btn').textContent = '⛅ Save to Google Drive';
-  G('sm-setup-panel').style.display = 'none';
+  G('sm-save-section').style.display  = hasPacks ? 'block' : 'none';
+  G('sm-save-status').textContent     = '';
+  G('sm-gdrive-save-btn').textContent = '☁ Save to Supabase';
+  G('sm-setup-panel').style.display   = 'none';
   G('sessions-modal').classList.add('visible');
-  G('sessions-modal').onclick = e=>{ if(e.target===G('sessions-modal')) closeSessionsModal(); };
+  G('sessions-modal').onclick = e =>{ if(e.target===G('sessions-modal')) closeSessionsModal(); };
   const dz = G('sm-drop-zone');
   dz.ondragover = e=>{ e.preventDefault(); dz.classList.add('drag-over'); };
   dz.ondragleave = ()=>dz.classList.remove('drag-over');
@@ -3201,23 +3257,20 @@ function openSessionsModal(){
 
 function closeSessionsModal(){ G('sessions-modal').classList.remove('visible'); }
 
-/* ----- Local file fallback ----- */
+/* ---- Local file fallback (unchanged) ---- */
 function saveSessionToDevice(){
-  const sess = buildSessionObject();
-  function slugPart(s){ return (s||'').trim().replace(/[^a-z0-9\s]/gi,' ').replace(/\s+/g,'-').replace(/-+/g,'-').replace(/^-|-$/g,'').slice(0,40); }
-  const parts = [sess.jobNum, sess.jobTitle, sess.jobSub].map(slugPart).filter(Boolean);
-  const woSuffix = sess.jobWO ? ' - ' + sess.jobWO.trim() : '';
-  const filename = (parts.length ? parts.join('--') : 'session') + woSuffix + '.json';
-  const blob = new Blob([JSON.stringify(sess,null,2)],{type:'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
+  const sess     = buildSessionObject();
+  const filename = sessionFilename(sess) + '.json';
+  const blob     = new Blob([JSON.stringify(sess,null,2)],{type:'application/json'});
+  const url      = URL.createObjectURL(blob);
+  const a        = document.createElement('a');
   a.href=url; a.download=filename; a.click();
   setTimeout(()=>URL.revokeObjectURL(url),2000);
   smNotify('Downloaded: '+filename);
 }
 
 function loadSessionFromFile(input){
-  const file=input.files[0]; if(!file)return;
+  const file=input.files[0]; if(!file) return;
   const reader=new FileReader();
   reader.onload=e=>{ try{ const sess=JSON.parse(e.target.result); if(applySession(sess)){smNotify('Session loaded');closeSessionsModal();} }catch(err){smNotify('Invalid file',true);} input.value=''; };
   reader.readAsText(file);
@@ -3229,7 +3282,35 @@ function loadDroppedFile(file){
   reader.readAsText(file);
 }
 
-/* ----- Toast ----- */
+/* ---- Toast ---- */
+
+/* ---- Deep-link auto-load from ?load=ROW_ID ---- */
+(function autoLoadFromUrl(){
+  try{
+    const params=new URLSearchParams(window.location.search);
+    const rowId=params.get('load');
+    if(!rowId) return;
+    const displayName=params.get('name')||'';
+    const run=()=>{
+      setTimeout(async()=>{
+        try{
+          const rows=await sbGet(SUPABASE_TABLE,{select:'content',id:'eq.'+rowId});
+          if(!rows.length) throw new Error('Session not found');
+          const sess=rows[0].content;
+          if(applySession(sess)){
+            smNotify('Loaded: '+(displayName||sess.jobTitle||'session'));
+            window.history.replaceState({},document.title,window.location.pathname);
+          }
+        }catch(err){
+          smNotify('Could not auto-load: '+err.message,true);
+        }
+      },300);
+    };
+    if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',run);
+    else run();
+  }catch(e){ console.error('autoLoadFromUrl error:',e); }
+})();
+
 let smNotifyTimer=null;
 function smNotify(msg,isError=false){
   const el=G('sm-notify');

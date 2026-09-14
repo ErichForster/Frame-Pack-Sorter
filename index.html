@@ -3299,6 +3299,18 @@ function loadDroppedFile(file){
 /* ---- Toast ---- */
 
 /* ---- Deep-link auto-load from ?load=SUPABASE_UUID ---- */
+/* ---- Toast notification ---- */
+let smNotifyTimer=null;
+function smNotify(msg,isError=false){
+  const el=G('sm-notify');
+  if(!el) return;
+  el.textContent=msg;
+  el.style.background=isError?'var(--txd)':'var(--tx)';
+  el.classList.add('show');
+  if(smNotifyTimer)clearTimeout(smNotifyTimer);
+  smNotifyTimer=setTimeout(()=>el.classList.remove('show'),2800);
+}
+
 (function autoLoadFromUrl(){
   try{
     const params=new URLSearchParams(window.location.search);

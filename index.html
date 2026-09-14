@@ -3287,84 +3287,43 @@ function loadDroppedFile(file){
 
 /* ---- Toast ---- */
 
-/* ---- Deep-link auto-load from ?load=ROW_ID ---- */
+/* ---- Deep-link auto-load from ?load=SUPABASE_UUID ---- */
 (function autoLoadFromUrl(){
   try{
     const params=new URLSearchParams(window.location.search);
     const rowId=params.get('load');
     if(!rowId) return;
+
+    // Validate UUID format before querying Supabase — old Drive file IDs are not UUIDs
+    const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if(!uuidPattern.test(rowId)){
+      console.warn('autoLoadFromUrl: "'+rowId+'" is not a valid Supabase UUID — ignoring ?load= param');
+      window.history.replaceState({},document.title,window.location.pathname);
+      return;
+    }
+
     const displayName=params.get('name')||'';
     const run=()=>{
       setTimeout(async()=>{
         try{
+          smNotify('Loading session…');
           const rows=await sbGet(SUPABASE_TABLE+'?id=eq.'+encodeURIComponent(rowId),{select:'content'});
           if(!rows.length) throw new Error('Session not found');
           const sess=rows[0].content;
           if(applySession(sess)){
-            smNotify('Loaded: '+(displayName||sess.jobTitle||'session'));
+            smNotify('Loaded: '+(displayName||sess.jobTitle||sess.jobNum||'session'));
             window.history.replaceState({},document.title,window.location.pathname);
           }
         }catch(err){
           smNotify('Could not auto-load: '+err.message,true);
+          console.error('autoLoadFromUrl error:',err);
         }
       },300);
     };
     if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',run);
     else run();
-  }catch(e){ console.error('autoLoadFromUrl error:',e); }
+  }catch(e){ console.error('autoLoadFromUrl setup error:',e); }
 })();
-
-let smNotifyTimer=null;
-function smNotify(msg,isError=false){
-  const el=G('sm-notify');
-  el.textContent=msg;
-  el.style.background=isError?'var(--txd)':'var(--tx)';
-  el.classList.add('show');
-  if(smNotifyTimer)clearTimeout(smNotifyTimer);
-  smNotifyTimer=setTimeout(()=>el.classList.remove('show'),2800);
-}
-
-/* ============================================================
-   DEEP-LINK AUTO-LOAD
-   Allows external pages (e.g. the Sessions Database companion app)
-   to open this app with a specific Drive session pre-loaded:
-     frame-pack-sorter-interactive.html?load=FILE_ID&name=optional-display-name
-   On page load, if a ?load= param is present, fetch that file from
-   Drive via the Apps Script backend and apply it automatically.
-   ============================================================ */
-(function autoLoadFromUrl(){
-  try{
-    const params=new URLSearchParams(window.location.search);
-    const fileId=params.get('load');
-    if(!fileId) return;
-    const displayName=params.get('name')||'';
-    const run=()=>{
-      setTimeout(async ()=>{
-        try{
-          smNotify('Loading session from Drive…');
-          const result=await scriptCall({ action:'load', id: fileId });
-          if(!result.ok) throw new Error(result.error||'Load failed');
-          const sess=typeof result.content==='string'?JSON.parse(result.content):result.content;
-          if(applySession(sess)){
-            smNotify('Loaded: '+(displayName||sess.jobTitle||sess.jobNum||'session'));
-            // Clean the URL so refresh doesn't re-trigger the load
-            const cleanUrl=window.location.pathname;
-            window.history.replaceState({}, document.title, cleanUrl);
-          }
-        }catch(err){
-          smNotify('Could not auto-load session: '+err.message, true);
-          console.error('autoLoadFromUrl error:', err);
-        }
-      }, 300);
-    };
-    // Script tag is at end of body, so DOM is already parsed — run directly.
-    // Fallback to DOMContentLoaded just in case this ever moves earlier in the document.
-    if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', run);
-    else run();
-  }catch(e){ console.error('autoLoadFromUrl setup error:', e); }
-})();
-
-
 
 
 </script>

@@ -3014,12 +3014,12 @@ function sbHeaders(){
 }
 
 async function sbGet(path, params={}){
-  // Build query string manually — URLSearchParams encodes colons/dots in values
-  // which breaks Supabase operators like order=updated_at.desc and id=eq.xxx
+  // Build query string — handle paths that may already contain a '?'
   const q = Object.entries(params).map(([k,v])=>
     encodeURIComponent(k)+'='+encodeURIComponent(v)
   ).join('&');
-  const url = `${SUPABASE_URL}/rest/v1/${path}${q ? '?'+q : ''}`;
+  const sep = path.includes('?') ? '&' : '?';
+  const url = `${SUPABASE_URL}/rest/v1/${path}${q ? sep+q : ''}`;
   const resp = await fetch(url, { headers: sbHeaders() });
   if(!resp.ok) throw new Error(`Supabase error ${resp.status}: ${await resp.text()}`);
   return resp.json();

@@ -3072,7 +3072,14 @@ function buildSessionObject(){
 }
 
 function applySession(sess){
-  if(!sess || sess._app !== 'Austruss Frame Pack Sorter'){
+  console.log('applySession called, _app:', sess?._app, '_version:', sess?._version);
+  // Accept sessions that either have the correct _app tag, OR have the expected
+  // session fields (handles migrated data that may have had _app stripped)
+  const isValid = sess && (
+    sess._app === 'Austruss Frame Pack Sorter' ||
+    (Array.isArray(sess.frames) && Array.isArray(sess.packs))
+  );
+  if(!isValid){
     smNotify('Not a valid Frame Pack Sorter session.', true); return false;
   }
   if(sess.jobTitle) G('job-title').value = sess.jobTitle;
@@ -3209,18 +3216,22 @@ async function loadDriveSession(id, title){
   if(item){ item.style.opacity='0.5'; item.style.pointerEvents='none'; }
   smNotify('Loading…');
   try {
-    // Fetch the full content column for this specific row
     const rows = await sbGet(SUPABASE_TABLE + '?id=eq.' + encodeURIComponent(id), {
       select: 'content',
     });
     if(!rows.length) throw new Error('Session not found');
-    const sess = rows[0].content;
+    // Supabase returns jsonb as a parsed JS object already
+    let sess = rows[0].content;
+    // If it came back as a string (shouldn't happen with jsonb but just in case)
+    if(typeof sess === 'string') sess = JSON.parse(sess);
+    console.log('Session loaded from Supabase:', sess?._app, Object.keys(sess||{}));
     if(applySession(sess)){
       smNotify('Loaded: ' + title);
       closeSessionsModal();
     }
   } catch(err) {
     smNotify('Load failed: ' + err.message, true);
+    console.error('loadDriveSession error:', err);
     if(item){ item.style.opacity=''; item.style.pointerEvents=''; }
   }
 }
